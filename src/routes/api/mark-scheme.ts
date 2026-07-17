@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { getModel, MODELS } from "@/lib/ai-provider";
 import { generateJson } from "@/lib/ai-json";
-import { guardAi } from "@/lib/api-guard";
+import { guardAi, aiErrorToResponse } from "@/lib/api-guard";
 
 const BodySchema = z.object({
   problem: z.string().min(1).max(2000),
@@ -41,15 +41,16 @@ Respond as strict JSON, no prose, no code fences:
   "total": <sum of all marks>
 }`;
 
-          const json = await generateJson<{ criteria?: unknown[]; total?: number }>({ model, prompt });
+          const json = await generateJson<{ criteria?: unknown[]; total?: number }>({
+            model,
+            prompt,
+          });
           if (!json || !Array.isArray(json.criteria)) {
             return new Response("Couldn't build a mark scheme. Please try again.", { status: 502 });
           }
           return Response.json(json);
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const status = msg.includes("429") ? 429 : msg.includes("402") ? 402 : 500;
-          return new Response(msg, { status });
+          return aiErrorToResponse(err);
         }
       },
     },

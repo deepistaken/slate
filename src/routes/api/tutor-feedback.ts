@@ -4,7 +4,7 @@ import { generateText, type ModelMessage } from "ai";
 import { z } from "zod";
 import { getModel, MODELS } from "@/lib/ai-provider";
 import { extractJson } from "@/lib/ai-json";
-import { guardAi } from "@/lib/api-guard";
+import { guardAi, aiErrorToResponse } from "@/lib/api-guard";
 import { logInteraction, sha256Hex } from "@/lib/supabase-server";
 
 const MessageSchema = z.object({
@@ -28,7 +28,9 @@ const BodySchema = z.object({
   struggling: z.boolean().optional().default(false),
   integrity: z.boolean().optional().default(false),
   markScheme: z
-    .array(z.object({ code: z.string().max(12), description: z.string().max(200), marks: z.number() }))
+    .array(
+      z.object({ code: z.string().max(12), description: z.string().max(200), marks: z.number() }),
+    )
     .max(20)
     .optional(),
 });
@@ -97,7 +99,9 @@ export const Route = createFileRoute("/api/tutor-feedback")({
           const model = getModel(MODELS.tutor);
 
           const stepsBlock = body.steps.length
-            ? body.steps.map((s, i) => `  ${i + 1}. ${s}${i === body.currentStep ? "  <-- current" : ""}`).join("\n")
+            ? body.steps
+                .map((s, i) => `  ${i + 1}. ${s}${i === body.currentStep ? "  <-- current" : ""}`)
+                .join("\n")
             : "(no explicit checkpoints)";
           const rungLine =
             typeof body.hintRung === "number"
@@ -129,36 +133,69 @@ Mode: ${body.mode}${rungLine}${body.examStyle ? `\nExam style for marking/tone: 
 Write your reply to the student in ${body.language}. Keep all mathematics in standard notation/LaTeX.`;
 
           const userParts: Array<
-            | { type: "text"; text: string }
-            | { type: "image"; image: string }
+            { type: "text"; text: string } | { type: "image"; image: string }
           > = [];
 
           if (body.mode === "chat" && body.userMessage) {
             userParts.push({ type: "text", text: `Student says: ${body.userMessage}` });
           } else if (body.mode === "chat") {
-            userParts.push({ type: "text", text: "The student wants the next level of help. Give the reply at exactly the hint rung above — no further." });
+            userParts.push({
+              type: "text",
+              text: "The student wants the next level of help. Give the reply at exactly the hint rung above — no further.",
+            });
           } else if (body.mode === "check") {
-            userParts.push({ type: "text", text: "The student tapped 'Check my work'. Review the current checkpoint." });
+            userParts.push({
+              type: "text",
+              text: "The student tapped 'Check my work'. Review the current checkpoint.",
+            });
           } else if (body.mode === "explain") {
-            userParts.push({ type: "text", text: "The student is stuck. Explain what's going wrong in 2-3 sentences, show a tiny worked micro-example with DIFFERENT numbers, then ask them to retry the current checkpoint. Still no final answer to the original problem." });
+            userParts.push({
+              type: "text",
+              text: "The student is stuck. Explain what's going wrong in 2-3 sentences, show a tiny worked micro-example with DIFFERENT numbers, then ask them to retry the current checkpoint. Still no final answer to the original problem.",
+            });
           } else if (body.mode === "review") {
-            userParts.push({ type: "text", text: "This is a post-exam review. The student has submitted; give the full critique including the correct final answer and where their work went off track." });
+            userParts.push({
+              type: "text",
+              text: "This is a post-exam review. The student has submitted; give the full critique including the correct final answer and where their work went off track.",
+            });
           } else if (body.mode === "mark") {
             const schemeText = body.markScheme?.length
               ? " Mark STRICTLY against this teacher-approved mark scheme — award each criterion's marks and set marks.total to the scheme's total:\n" +
-                body.markScheme.map((c) => `${c.code} (${c.marks} mark${c.marks === 1 ? "" : "s"}): ${c.description}`).join("\n")
+                body.markScheme
+                  .map(
+                    (c) =>
+                      `${c.code} (${c.marks} mark${c.marks === 1 ? "" : "s"}): ${c.description}`,
+                  )
+                  .join("\n")
               : "";
-            userParts.push({ type: "text", text: "The student tapped 'Mark my work'. Mark their full solution like an exam marker per the MARKING rules: award method vs answer marks, set the 'marks' object, and keep 'reply' to a one-line summary." + schemeText });
+            userParts.push({
+              type: "text",
+              text:
+                "The student tapped 'Mark my work'. Mark their full solution like an exam marker per the MARKING rules: award method vs answer marks, set the 'marks' object, and keep 'reply' to a one-line summary." +
+                schemeText,
+            });
           } else if (body.mode === "teachback") {
-            userParts.push({ type: "text", text: `The student is explaining the idea in their own words${body.userMessage ? `: "${body.userMessage}"` : " (see canvas)"}. Grade their understanding per TEACHBACK: set the 'marks' object with grade "Understanding", and keep 'reply' to a one-line summary.` });
+            userParts.push({
+              type: "text",
+              text: `The student is explaining the idea in their own words${body.userMessage ? `: "${body.userMessage}"` : " (see canvas)"}. Grade their understanding per TEACHBACK: set the 'marks' object with grade "Understanding", and keep 'reply' to a one-line summary.`,
+            });
           } else if (body.mode === "gradegraph") {
-            userParts.push({ type: "text", text: "The student tapped 'Grade my sketch'. The canvas holds their hand-drawn graph. Grade it per GRAPHGRADE: set the 'marks' object with grade \"Sketch\", and keep 'reply' to a one-line summary." });
+            userParts.push({
+              type: "text",
+              text: "The student tapped 'Grade my sketch'. The canvas holds their hand-drawn graph. Grade it per GRAPHGRADE: set the 'marks' object with grade \"Sketch\", and keep 'reply' to a one-line summary.",
+            });
           } else {
-            userParts.push({ type: "text", text: "Quietly observe the canvas. If you see a CLEAR mistake or the student has gone off-track, you MUST speak up with one short Socratic nudge (never the answer). Reply with exactly SILENT only when the work so far is correct, or there is too little written to judge yet." });
+            userParts.push({
+              type: "text",
+              text: "Quietly observe the canvas. If you see a CLEAR mistake or the student has gone off-track, you MUST speak up with one short Socratic nudge (never the answer). Reply with exactly SILENT only when the work so far is correct, or there is too little written to judge yet.",
+            });
           }
 
           if (body.canvasImageBase64) {
-            userParts.push({ type: "image", image: `data:image/jpeg;base64,${body.canvasImageBase64}` });
+            userParts.push({
+              type: "image",
+              image: `data:image/jpeg;base64,${body.canvasImageBase64}`,
+            });
           }
 
           const messages: ModelMessage[] = [
@@ -228,9 +265,7 @@ Write your reply to the student in ${body.language}. Keep all mathematics in sta
             misconception,
           });
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const status = msg.includes("429") ? 429 : msg.includes("402") ? 402 : 500;
-          return new Response(msg, { status });
+          return aiErrorToResponse(err);
         }
       },
     },

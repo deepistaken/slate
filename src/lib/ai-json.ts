@@ -14,7 +14,10 @@ export function extractJson<T = unknown>(raw: string): T | null {
   let s = raw.trim();
 
   // Strip leading/trailing code fences if present.
-  s = s.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+  s = s
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
 
   // Fast path: the whole thing is valid JSON.
   try {
@@ -64,7 +67,12 @@ type GenArgs =
  * giving up. Returns null only if both attempts fail.
  */
 export async function generateJson<T = unknown>(args: GenArgs): Promise<T | null> {
-  const first = await generateText(args as Parameters<typeof generateText>[0]);
+  // maxRetries 4 → exponential backoff spans ~30s, enough to ride out Gemini's
+  // free-tier per-minute rate limit instead of failing the whole upload.
+  const first = await generateText({
+    ...(args as Parameters<typeof generateText>[0]),
+    maxRetries: 4,
+  });
   const parsed = extractJson<T>(first.text);
   if (parsed !== null) return parsed;
 
@@ -89,6 +97,6 @@ export async function generateJson<T = unknown>(args: GenArgs): Promise<T | null
         },
       ];
 
-  const second = await generateText({ model: args.model, messages: retryMessages });
+  const second = await generateText({ model: args.model, messages: retryMessages, maxRetries: 4 });
   return extractJson<T>(second.text);
 }

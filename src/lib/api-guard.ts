@@ -9,15 +9,9 @@
  *   if (!gate.ok) return gate.response;
  *   // ...gate.userId is the authenticated user id
  */
-import {
-  consumeQuota,
-  getUserFromRequest,
-  supabaseServerConfigured,
-} from "@/lib/supabase-server";
+import { consumeQuota, getUserFromRequest, supabaseServerConfigured } from "@/lib/supabase-server";
 
-export type GuardResult =
-  | { ok: true; userId: string }
-  | { ok: false; response: Response };
+export type GuardResult = { ok: true; userId: string } | { ok: false; response: Response };
 
 function deny(status: number, message: string): { ok: false; response: Response } {
   return { ok: false, response: new Response(message, { status }) };
@@ -56,4 +50,24 @@ export async function guardAi(request: Request, cost = 1): Promise<GuardResult> 
   }
 
   return { ok: true, userId: user.id };
+}
+
+/**
+ * Map a thrown AI-provider error to an HTTP response with a message users can
+ * act on. Gemini free-tier rate limits (429 RESOURCE_EXHAUSTED) are minute- or
+ * day-scoped; surface that instead of the raw quota dump.
+ */
+export function aiErrorToResponse(err: unknown): Response {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes("429") || /quota|RESOURCE_EXHAUSTED|rate.?limit/i.test(msg)) {
+    const daily = /per.?day|daily/i.test(msg);
+    return new Response(
+      daily
+        ? "The AI's free daily quota is used up. It resets at midnight PT — or set a higher-quota model via SLATE_TUTOR_MODEL / SLATE_GENERATE_MODEL."
+        : "The AI is briefly rate-limited. Wait about a minute and try again.",
+      { status: 429 },
+    );
+  }
+  if (msg.includes("402")) return new Response(msg, { status: 402 });
+  return new Response(msg, { status: 500 });
 }

@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { getModel, MODELS } from "@/lib/ai-provider";
 import { generateJson } from "@/lib/ai-json";
-import { guardAi } from "@/lib/api-guard";
+import { guardAi, aiErrorToResponse } from "@/lib/api-guard";
 
 const BodySchema = z.object({
   text: z.string().min(1).max(60000).optional(),
@@ -63,9 +63,7 @@ ${sourceText.slice(0, 50000)}
           }
           return Response.json(json);
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const status = msg.includes("429") ? 429 : msg.includes("402") ? 402 : 500;
-          return new Response(msg, { status });
+          return aiErrorToResponse(err);
         }
       },
     },

@@ -301,7 +301,8 @@ function Tutor() {
     if (status === 401 || status === 503) {
       toast.error(text || "Please sign in to keep practicing.");
       goToLogin();
-    } else if (status === 429) toast.error(text || "You've hit today's limit. Try again tomorrow.");
+    } else if (status === 429)
+      toast.error(text || "The AI is rate-limited right now. Wait a minute and try again.");
     else if (status === 402)
       toast.error("AI credits exhausted. Add credits in Workspace settings.");
     else toast.error(text || `Request failed (${status})`);
@@ -551,7 +552,9 @@ function Tutor() {
     if (!problem || !autoCheck || examActive) return;
     const id = setInterval(() => {
       const now = Date.now();
-      if (now - lastAutoRef.current < 6000) return;
+      // 15s between silent auto-checks: Gemini's free tier is ~20 requests/min,
+      // and the auto loop must leave headroom for user-initiated calls.
+      if (now - lastAutoRef.current < 15000) return;
       if (!canvasRef.current?.isDirty()) return;
       lastAutoRef.current = now;
       callTutor("auto");
