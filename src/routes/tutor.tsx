@@ -1083,11 +1083,13 @@ function Tutor() {
                         className="w-full rounded-md border"
                       />
                     ) : (
-                      <div className="rounded-md bg-muted/40 p-3 text-sm">
-                        <MathMarkdown>{`$$${problem.latex}$$`}</MathMarkdown>
-                      </div>
+                      <>
+                        <div className="rounded-md bg-muted/40 p-3 text-sm">
+                          <MathMarkdown>{`$$${problem.latex}$$`}</MathMarkdown>
+                        </div>
+                        <p className="text-sm text-muted-foreground">{problem.problem}</p>
+                      </>
                     )}
-                    <p className="text-sm text-muted-foreground">{problem.problem}</p>
                   </div>
                 ) : (
                   <p className="mt-3 text-sm text-muted-foreground">
@@ -1147,275 +1149,304 @@ function Tutor() {
 
             {/* Canvas */}
             <ResizablePanel defaultSize="52%" minSize="30%" className="min-h-0 min-w-0">
-              <main className="flex h-full min-h-0 min-w-0 flex-col gap-2">
-                {problem?.steps?.length ? (
-                  <div className="rounded-xl border bg-background p-2">
-                    <CheckpointTracker
-                      steps={problem.steps}
-                      statuses={stepStatuses}
-                      onSelect={(i) => setCurrentStep(i)}
-                    />
-                  </div>
-                ) : null}
-                {problem && watchOuts.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
-                    <span className="flex items-center gap-1 font-medium text-amber-700 dark:text-amber-300">
-                      <AlertCircle className="size-3.5" /> Your usual slip-ups:
-                    </span>
-                    {watchOuts.map((w) => (
-                      <span
-                        key={w.tag}
-                        className="rounded-full border border-amber-500/30 px-2 py-0.5 text-amber-700 dark:text-amber-300"
-                      >
-                        {w.tag}
-                        {w.count > 1 ? ` ×${w.count}` : ""}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <div className="grid min-w-0 grid-cols-1 gap-2 rounded-xl border bg-background p-2 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant={tool === "pen" ? "default" : "outline"}
-                      onClick={() => setTool("pen")}
-                    >
-                      <Pen className="mr-1 size-4" /> Pen
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={tool === "eraser" ? "default" : "outline"}
-                      onClick={() => setTool("eraser")}
-                    >
-                      <Eraser className="mr-1 size-4" /> Eraser
-                    </Button>
-                    <div className="mx-1 h-6 w-px shrink-0 bg-border" />
-                    <input
-                      type="color"
-                      value={color}
-                      onChange={(e) => setColor(e.target.value)}
-                      className="h-8 w-8 shrink-0 cursor-pointer rounded border"
-                      aria-label="Pen color"
-                    />
-                    <input
-                      type="range"
-                      min={1}
-                      max={10}
-                      value={size}
-                      onChange={(e) => setSize(Number(e.target.value))}
-                      className="w-24 min-w-0"
-                      aria-label="Pen size"
-                    />
-                    <div className="mx-1 h-6 w-px shrink-0 bg-border" />
-                    <Button size="sm" variant="outline" onClick={() => canvasRef.current?.undo()}>
-                      <Undo2 className="size-4" />
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => canvasRef.current?.redo()}>
-                      <Redo2 className="size-4" />
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => canvasRef.current?.clear()}>
-                      <Trash2 className="size-4" />
-                    </Button>
-                  </div>
-                  <div className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
-                    <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
-                      <input
-                        type="checkbox"
-                        checked={autoCheck && !examActive}
-                        disabled={examActive}
-                        onChange={(e) => setAutoCheck(e.target.checked)}
-                      />
-                      Auto-watch
-                    </label>
-                    <Button
-                      size="sm"
-                      onClick={() => callTutor("check")}
-                      disabled={!problem || sending || examActive}
-                      className="w-full justify-center sm:w-auto sm:min-w-[9.5rem]"
-                    >
-                      {sending ? (
-                        <Loader2 className="mr-1 size-4 animate-spin" />
-                      ) : (
-                        <CheckCircle2 className="mr-1 size-4" />
-                      )}
-                      Check my work
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => setConfidencePrompt(true)}
-                      disabled={!problem || sending || examActive || confidencePrompt}
-                      className="w-full justify-center sm:w-auto"
-                      title="Grade my full solution like an exam marker"
-                    >
-                      <Award className="mr-1 size-4" />
-                      Mark my work
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setTeachbackMode(true)}
-                      disabled={!problem || sending || examActive || teachbackMode}
-                      className="w-full justify-center sm:w-auto"
-                      title="Explain the idea in your own words and get scored on understanding"
-                    >
-                      <GraduationCap className="mr-1 size-4" />
-                      Teach it back
-                    </Button>
-                    {problem?.kind === "graph" && (
-                      <Button
-                        size="sm"
-                        onClick={() => callTutor("gradegraph")}
-                        disabled={!problem || sending || examActive}
-                        className="w-full justify-center sm:w-auto"
-                        title="Grade my hand-drawn graph"
-                      >
-                        <LineChart className="mr-1 size-4" />
-                        Grade my sketch
-                      </Button>
-                    )}
-                    {teacherMode && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={openScheme}
-                        disabled={!problem}
-                        className="w-full justify-center sm:w-auto"
-                        title="Review and edit the mark scheme used for grading"
-                      >
-                        <ClipboardList className="mr-1 size-4" />
-                        Mark scheme
-                        {scheme ? ` (${scheme.total})` : ""}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-                {confidencePrompt && (
-                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-2 text-sm">
-                    <span className="text-muted-foreground">
-                      Before I mark — how sure are you it's right?
-                    </span>
-                    <Button size="sm" variant="outline" onClick={() => submitMark(0.35)}>
-                      Not sure
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => submitMark(0.67)}>
-                      Fairly sure
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => submitMark(1)}>
-                      Very sure
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setConfidencePrompt(false)}>
-                      Cancel
-                    </Button>
-                  </div>
-                )}
-                {struggleOffer && !teachbackMode && !confidencePrompt && (
-                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-2 text-sm">
-                    <span className="text-amber-700 dark:text-amber-300">
-                      This step looks tricky — want a hand?
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        setStruggleOffer(false);
-                        callTutor("check");
-                      }}
-                    >
-                      Give me a nudge
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setStruggleOffer(false)}>
-                      I'm good
-                    </Button>
-                  </div>
-                )}
-                {teachbackMode && (
-                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-2 text-sm">
-                    <GraduationCap className="size-4 shrink-0 text-primary" />
-                    <span className="min-w-0 text-muted-foreground">
-                      Teach-back: explain the method in your own words in the chat box (type or use
-                      the mic), then send — I'll score your understanding.
-                    </span>
-                    <Button size="sm" variant="ghost" onClick={() => setTeachbackMode(false)}>
-                      Cancel
-                    </Button>
-                  </div>
-                )}
-                {schemeOpen && teacherMode && (
-                  <div className="rounded-xl border bg-background p-3 text-sm">
-                    <div className="mb-2 flex items-center justify-between">
-                      <div className="flex items-center gap-2 font-medium">
-                        <ClipboardList className="size-4 text-primary" /> Mark scheme
-                        <span className="text-xs font-normal text-muted-foreground">
-                          total {scheme?.total ?? 0}
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => setSchemeOpen(false)}
-                        className="rounded p-1 hover:bg-muted"
-                      >
-                        <X className="size-4" />
-                      </button>
-                    </div>
-                    {schemeLoading ? (
-                      <p className="flex items-center gap-2 text-muted-foreground">
-                        <Loader2 className="size-4 animate-spin" /> Building mark scheme…
-                      </p>
-                    ) : scheme ? (
-                      <div className="space-y-2">
-                        {scheme.criteria.map((c, i) => (
-                          <div key={i} className="flex items-center gap-2">
-                            <input
-                              value={c.code}
-                              onChange={(e) => updateCriterion(i, { code: e.target.value })}
-                              className="w-14 shrink-0 rounded border bg-background px-2 py-1 text-xs"
-                              placeholder="M1"
-                            />
-                            <input
-                              value={c.description}
-                              onChange={(e) => updateCriterion(i, { description: e.target.value })}
-                              className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
-                              placeholder="What earns this mark"
-                            />
-                            <input
-                              type="number"
-                              min={0}
-                              value={c.marks}
-                              onChange={(e) =>
-                                updateCriterion(i, { marks: Number(e.target.value) })
-                              }
-                              className="w-14 shrink-0 rounded border bg-background px-2 py-1 text-xs"
-                            />
-                            <button
-                              onClick={() => removeCriterion(i)}
-                              className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
-                              title="Remove"
+              <main className="h-full min-h-0 min-w-0">
+                <ResizablePanelGroup orientation="vertical">
+                  {/* Controls above the canvas — drag the handle below them to
+                      give the writing area more or less height. */}
+                  <ResizablePanel defaultSize="30%" minSize="8%" maxSize="70%" className="min-h-0">
+                    <div className="flex h-full min-w-0 flex-col gap-2 overflow-y-auto">
+                      {problem?.steps?.length ? (
+                        <div className="rounded-xl border bg-background p-2">
+                          <CheckpointTracker
+                            steps={problem.steps}
+                            statuses={stepStatuses}
+                            onSelect={(i) => setCurrentStep(i)}
+                          />
+                        </div>
+                      ) : null}
+                      {problem && watchOuts.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+                          <span className="flex items-center gap-1 font-medium text-amber-700 dark:text-amber-300">
+                            <AlertCircle className="size-3.5" /> Your usual slip-ups:
+                          </span>
+                          {watchOuts.map((w) => (
+                            <span
+                              key={w.tag}
+                              className="rounded-full border border-amber-500/30 px-2 py-0.5 text-amber-700 dark:text-amber-300"
                             >
-                              <X className="size-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                        <div className="flex flex-wrap items-center gap-2 pt-1">
-                          <Button size="sm" variant="outline" onClick={addCriterion}>
-                            <Plus className="mr-1 size-3.5" /> Add
+                              {w.tag}
+                              {w.count > 1 ? ` ×${w.count}` : ""}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="grid min-w-0 grid-cols-1 gap-2 rounded-xl border bg-background p-2 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant={tool === "pen" ? "default" : "outline"}
+                            onClick={() => setTool("pen")}
+                          >
+                            <Pen className="mr-1 size-4" /> Pen
                           </Button>
-                          <Button size="sm" variant="ghost" onClick={resetScheme}>
-                            Regenerate from AI
+                          <Button
+                            size="sm"
+                            variant={tool === "eraser" ? "default" : "outline"}
+                            onClick={() => setTool("eraser")}
+                          >
+                            <Eraser className="mr-1 size-4" /> Eraser
                           </Button>
-                          <div className="flex-1" />
-                          <Button size="sm" onClick={saveSchemeNow}>
-                            Save scheme
+                          <div className="mx-1 h-6 w-px shrink-0 bg-border" />
+                          <input
+                            type="color"
+                            value={color}
+                            onChange={(e) => setColor(e.target.value)}
+                            className="h-8 w-8 shrink-0 cursor-pointer rounded border"
+                            aria-label="Pen color"
+                          />
+                          <input
+                            type="range"
+                            min={1}
+                            max={10}
+                            value={size}
+                            onChange={(e) => setSize(Number(e.target.value))}
+                            className="w-24 min-w-0"
+                            aria-label="Pen size"
+                          />
+                          <div className="mx-1 h-6 w-px shrink-0 bg-border" />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => canvasRef.current?.undo()}
+                          >
+                            <Undo2 className="size-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => canvasRef.current?.redo()}
+                          >
+                            <Redo2 className="size-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => canvasRef.current?.clear()}
+                          >
+                            <Trash2 className="size-4" />
                           </Button>
                         </div>
+                        <div className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
+                          <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
+                            <input
+                              type="checkbox"
+                              checked={autoCheck && !examActive}
+                              disabled={examActive}
+                              onChange={(e) => setAutoCheck(e.target.checked)}
+                            />
+                            Auto-watch
+                          </label>
+                          <Button
+                            size="sm"
+                            onClick={() => callTutor("check")}
+                            disabled={!problem || sending || examActive}
+                            className="w-full justify-center sm:w-auto sm:min-w-[9.5rem]"
+                          >
+                            {sending ? (
+                              <Loader2 className="mr-1 size-4 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="mr-1 size-4" />
+                            )}
+                            Check my work
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => setConfidencePrompt(true)}
+                            disabled={!problem || sending || examActive || confidencePrompt}
+                            className="w-full justify-center sm:w-auto"
+                            title="Grade my full solution like an exam marker"
+                          >
+                            <Award className="mr-1 size-4" />
+                            Mark my work
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setTeachbackMode(true)}
+                            disabled={!problem || sending || examActive || teachbackMode}
+                            className="w-full justify-center sm:w-auto"
+                            title="Explain the idea in your own words and get scored on understanding"
+                          >
+                            <GraduationCap className="mr-1 size-4" />
+                            Teach it back
+                          </Button>
+                          {problem?.kind === "graph" && (
+                            <Button
+                              size="sm"
+                              onClick={() => callTutor("gradegraph")}
+                              disabled={!problem || sending || examActive}
+                              className="w-full justify-center sm:w-auto"
+                              title="Grade my hand-drawn graph"
+                            >
+                              <LineChart className="mr-1 size-4" />
+                              Grade my sketch
+                            </Button>
+                          )}
+                          {teacherMode && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={openScheme}
+                              disabled={!problem}
+                              className="w-full justify-center sm:w-auto"
+                              title="Review and edit the mark scheme used for grading"
+                            >
+                              <ClipboardList className="mr-1 size-4" />
+                              Mark scheme
+                              {scheme ? ` (${scheme.total})` : ""}
+                            </Button>
+                          )}
+                        </div>
                       </div>
-                    ) : (
-                      <p className="text-muted-foreground">No mark scheme loaded.</p>
-                    )}
-                  </div>
-                )}
-                <div className="min-h-0 flex-1">
-                  <HandwritingCanvas ref={canvasRef} tool={tool} color={color} size={size} />
-                </div>
+                      {confidencePrompt && (
+                        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-2 text-sm">
+                          <span className="text-muted-foreground">
+                            Before I mark — how sure are you it's right?
+                          </span>
+                          <Button size="sm" variant="outline" onClick={() => submitMark(0.35)}>
+                            Not sure
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => submitMark(0.67)}>
+                            Fairly sure
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => submitMark(1)}>
+                            Very sure
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setConfidencePrompt(false)}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      )}
+                      {struggleOffer && !teachbackMode && !confidencePrompt && (
+                        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-2 text-sm">
+                          <span className="text-amber-700 dark:text-amber-300">
+                            This step looks tricky — want a hand?
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setStruggleOffer(false);
+                              callTutor("check");
+                            }}
+                          >
+                            Give me a nudge
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setStruggleOffer(false)}>
+                            I'm good
+                          </Button>
+                        </div>
+                      )}
+                      {teachbackMode && (
+                        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-2 text-sm">
+                          <GraduationCap className="size-4 shrink-0 text-primary" />
+                          <span className="min-w-0 text-muted-foreground">
+                            Teach-back: explain the method in your own words in the chat box (type
+                            or use the mic), then send — I'll score your understanding.
+                          </span>
+                          <Button size="sm" variant="ghost" onClick={() => setTeachbackMode(false)}>
+                            Cancel
+                          </Button>
+                        </div>
+                      )}
+                      {schemeOpen && teacherMode && (
+                        <div className="rounded-xl border bg-background p-3 text-sm">
+                          <div className="mb-2 flex items-center justify-between">
+                            <div className="flex items-center gap-2 font-medium">
+                              <ClipboardList className="size-4 text-primary" /> Mark scheme
+                              <span className="text-xs font-normal text-muted-foreground">
+                                total {scheme?.total ?? 0}
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => setSchemeOpen(false)}
+                              className="rounded p-1 hover:bg-muted"
+                            >
+                              <X className="size-4" />
+                            </button>
+                          </div>
+                          {schemeLoading ? (
+                            <p className="flex items-center gap-2 text-muted-foreground">
+                              <Loader2 className="size-4 animate-spin" /> Building mark scheme…
+                            </p>
+                          ) : scheme ? (
+                            <div className="space-y-2">
+                              {scheme.criteria.map((c, i) => (
+                                <div key={i} className="flex items-center gap-2">
+                                  <input
+                                    value={c.code}
+                                    onChange={(e) => updateCriterion(i, { code: e.target.value })}
+                                    className="w-14 shrink-0 rounded border bg-background px-2 py-1 text-xs"
+                                    placeholder="M1"
+                                  />
+                                  <input
+                                    value={c.description}
+                                    onChange={(e) =>
+                                      updateCriterion(i, { description: e.target.value })
+                                    }
+                                    className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
+                                    placeholder="What earns this mark"
+                                  />
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={c.marks}
+                                    onChange={(e) =>
+                                      updateCriterion(i, { marks: Number(e.target.value) })
+                                    }
+                                    className="w-14 shrink-0 rounded border bg-background px-2 py-1 text-xs"
+                                  />
+                                  <button
+                                    onClick={() => removeCriterion(i)}
+                                    className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
+                                    title="Remove"
+                                  >
+                                    <X className="size-3.5" />
+                                  </button>
+                                </div>
+                              ))}
+                              <div className="flex flex-wrap items-center gap-2 pt-1">
+                                <Button size="sm" variant="outline" onClick={addCriterion}>
+                                  <Plus className="mr-1 size-3.5" /> Add
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={resetScheme}>
+                                  Regenerate from AI
+                                </Button>
+                                <div className="flex-1" />
+                                <Button size="sm" onClick={saveSchemeNow}>
+                                  Save scheme
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-muted-foreground">No mark scheme loaded.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </ResizablePanel>
+                  <ResizableHandle withHandle className="my-1" />
+                  <ResizablePanel defaultSize="70%" minSize="30%" className="min-h-0">
+                    <div className="h-full min-h-0">
+                      <HandwritingCanvas ref={canvasRef} tool={tool} color={color} size={size} />
+                    </div>
+                  </ResizablePanel>
+                </ResizablePanelGroup>
               </main>
             </ResizablePanel>
 
