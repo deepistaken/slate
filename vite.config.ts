@@ -39,4 +39,8 @@ export default defineConfig({
   tanstackStart: {
     server: { entry: "server" },
   },
+  // Render sets RENDER=true in every build/runtime env. Without this, the
+  // Lovable config defaults Nitro to "cloudflare-module" (it auto-detects
+  // wrangler.jsonc), producing a Worker bundle that `node` exits on immediately.
+  ...(process.env.RENDER ? { nitro: { preset: "node-server" } } : {}),
 });
