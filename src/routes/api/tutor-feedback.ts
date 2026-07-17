@@ -154,7 +154,7 @@ Write your reply to the student in ${body.language}. Keep all mathematics in sta
           } else if (body.mode === "gradegraph") {
             userParts.push({ type: "text", text: "The student tapped 'Grade my sketch'. The canvas holds their hand-drawn graph. Grade it per GRAPHGRADE: set the 'marks' object with grade \"Sketch\", and keep 'reply' to a one-line summary." });
           } else {
-            userParts.push({ type: "text", text: "Quietly observe the canvas. Only speak up if there is something useful to say. If nothing useful, set reply to exactly: SILENT" });
+            userParts.push({ type: "text", text: "Quietly observe the canvas. If you see a CLEAR mistake or the student has gone off-track, you MUST speak up with one short Socratic nudge (never the answer). Reply with exactly SILENT only when the work so far is correct, or there is too little written to judge yet." });
           }
 
           if (body.canvasImageBase64) {

@@ -505,7 +505,7 @@ function Tutor() {
     if (!problem || !autoCheck || examActive) return;
     const id = setInterval(() => {
       const now = Date.now();
-      if (now - lastAutoRef.current < 10000) return;
+      if (now - lastAutoRef.current < 6000) return;
       if (!canvasRef.current?.isDirty()) return;
       lastAutoRef.current = now;
       callTutor("auto");
