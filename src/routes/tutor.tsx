@@ -45,6 +45,8 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Toaster } from "@/components/ui/sonner";
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { HandwritingCanvas, type CanvasHandle } from "@/components/HandwritingCanvas";
 import { MathMarkdown } from "@/components/MathMarkdown";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -58,7 +60,6 @@ import { downloadReplay } from "@/lib/session-replay";
 import { useProgress } from "@/hooks/use-progress";
 import { useAuth } from "@/lib/auth";
 import { callAi, NotAuthenticatedError } from "@/lib/ai-client";
-import { saveSession } from "@/lib/user-data";
 import {
   loadProgress,
   pickNextSkill,
@@ -95,7 +96,17 @@ export const Route = createFileRoute("/tutor")({
   component: Tutor,
 });
 
-type Problem = { problem: string; latex: string; outline: string; steps?: string[]; kind?: "solve" | "graph" };
+type Problem = {
+  problem: string;
+  latex: string;
+  outline: string;
+  steps?: string[];
+  kind?: "solve" | "graph";
+  /** 1-based page in the source PDF, when extracted from one. */
+  page?: number;
+  /** Screenshot (data URL) of the PDF page the problem appears on. */
+  image?: string;
+};
 type Marks = { awarded: number; total: number; grade: string; comment: string };
 type ChatMsg = {
   role: "user" | "assistant";
@@ -110,7 +121,11 @@ type ChatMsg = {
 type Submission = { problem: Problem; snapshot: string; review?: string };
 
 function Tutor() {
-  const { configured: authConfigured, loading: authLoading, user: authUser } = useAuth();
+  const { configured: authConfigured, loading: authLoading, user: authUser, role } = useAuth();
+  // Role is fixed at signup; students never see teacher tools. Without
+  // Supabase configured (local dev) the tools stay available.
+  const canUseTeacherTools = !authConfigured || role === "teacher";
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const canvasRef = useRef<CanvasHandle>(null);
   const [tool, setTool] = useState<"pen" | "eraser">("pen");
@@ -178,9 +193,10 @@ function Tutor() {
 
   useEffect(() => () => stopSpeaking(), []);
   useEffect(() => setIntegrity(getIntegrityMode()), []);
-  useEffect(() => setTeacher(getTeacherMode()), []);
+  useEffect(() => setTeacher(canUseTeacherTools ? getTeacherMode() : false), [canUseTeacherTools]);
 
   const toggleTeacher = () => {
+    if (!canUseTeacherTools) return;
     setTeacher((v) => {
       const next = !v;
       setTeacherMode(next);
@@ -285,7 +301,8 @@ function Tutor() {
       toast.error(text || "Please sign in to keep practicing.");
       goToLogin();
     } else if (status === 429) toast.error(text || "You've hit today's limit. Try again tomorrow.");
-    else if (status === 402) toast.error("AI credits exhausted. Add credits in Workspace settings.");
+    else if (status === 402)
+      toast.error("AI credits exhausted. Add credits in Workspace settings.");
     else toast.error(text || `Request failed (${status})`);
   };
 
@@ -318,31 +335,39 @@ function Tutor() {
     canvasRef.current?.markClean();
   };
 
-  const generateProblem = useCallback(async (override?: { topic?: string; difficulty?: "easy" | "medium" | "hard"; examId?: string; kind?: "solve" | "graph" }) => {
-    const useTopic = override?.topic ?? topic;
-    const useDifficulty = override?.difficulty ?? difficulty;
-    const useExam = getExam(override?.examId ?? examId);
-    setGenerating(true);
-    try {
-      const res = await callAi("/api/generate-problem", {
-        topic: useTopic,
-        difficulty: useDifficulty,
-        language: useExam.language,
-        examStyle: useExam.styleNote ?? "",
-        kind: override?.kind ?? "solve",
-      });
-      if (!res.ok) {
-        handleApiError(res.status, await res.text());
-        return;
+  const generateProblem = useCallback(
+    async (override?: {
+      topic?: string;
+      difficulty?: "easy" | "medium" | "hard";
+      examId?: string;
+      kind?: "solve" | "graph";
+    }) => {
+      const useTopic = override?.topic ?? topic;
+      const useDifficulty = override?.difficulty ?? difficulty;
+      const useExam = getExam(override?.examId ?? examId);
+      setGenerating(true);
+      try {
+        const res = await callAi("/api/generate-problem", {
+          topic: useTopic,
+          difficulty: useDifficulty,
+          language: useExam.language,
+          examStyle: useExam.styleNote ?? "",
+          kind: override?.kind ?? "solve",
+        });
+        if (!res.ok) {
+          handleApiError(res.status, await res.text());
+          return;
+        }
+        const data = (await res.json()) as Problem;
+        initProblem(data);
+      } catch (e) {
+        handleThrown(e, "Failed to generate problem");
+      } finally {
+        setGenerating(false);
       }
-      const data = (await res.json()) as Problem;
-      initProblem(data);
-    } catch (e) {
-      handleThrown(e, "Failed to generate problem");
-    } finally {
-      setGenerating(false);
-    }
-  }, [topic, difficulty, examId]);
+    },
+    [topic, difficulty, examId],
+  );
 
   // Adaptive: pick the weakest topic in the current exam at the right difficulty.
   const smartPractice = useCallback(() => {
@@ -430,7 +455,12 @@ function Tutor() {
 
         // Update checkpoint statuses (with felt feedback on progress).
         // Marking, teach-back and sketch-grading don't touch the checkpoint tracker.
-        if (problem.steps?.length && mode !== "mark" && mode !== "teachback" && mode !== "gradegraph") {
+        if (
+          problem.steps?.length &&
+          mode !== "mark" &&
+          mode !== "teachback" &&
+          mode !== "gradegraph"
+        ) {
           const total = problem.steps.length;
           const isLast = currentStep >= total - 1;
           if (data.advanceStep && isLast) {
@@ -497,7 +527,21 @@ function Tutor() {
         if (mode !== "auto") setSending(false);
       }
     },
-    [problem, messages, speakReplies, currentStep, topic, difficulty, record, examId, noteMisconception, noteConfidence, noteMarkScore, integrityMode, scheme],
+    [
+      problem,
+      messages,
+      speakReplies,
+      currentStep,
+      topic,
+      difficulty,
+      record,
+      examId,
+      noteMisconception,
+      noteConfidence,
+      noteMarkScore,
+      integrityMode,
+      scheme,
+    ],
   );
 
   // Auto-snapshot loop (disabled in exam mode)
@@ -600,25 +644,37 @@ function Tutor() {
     setPdfName(file.name);
     setPdfProblems([]);
     try {
-      const { extractPdfText } = await import("@/lib/pdf");
-      const text = await extractPdfText(file);
-      if (!text.trim()) {
+      const { extractPdfPages } = await import("@/lib/pdf");
+      const pages = await extractPdfPages(file);
+      if (!pages.some((p) => p.text.trim())) {
         toast.error("No selectable text found in that PDF.");
+        setPdfName(null);
         return;
       }
-      const res = await callAi("/api/extract-problems", { text });
+      const res = await callAi("/api/extract-problems", { pages: pages.map((p) => p.text) });
       if (!res.ok) {
         handleApiError(res.status, await res.text());
         return;
       }
       const data = (await res.json()) as { problems: Problem[] };
-      setPdfProblems(data.problems ?? []);
-      if (!data.problems?.length) toast.error("Couldn't find any problems in that PDF.");
+      // Attach the page screenshot so the problem shows as it appears in print.
+      const problems = (data.problems ?? []).map((p) => ({
+        ...p,
+        image: p.page && pages[p.page - 1] ? pages[p.page - 1].image : pages[0]?.image,
+      }));
+      setPdfProblems(problems);
+      if (!problems.length) toast.error("Couldn't find any problems in that PDF.");
     } catch (e) {
       handleThrown(e, "Failed to read PDF");
     } finally {
       setPdfLoading(false);
     }
+  };
+
+  const removePdf = () => {
+    setPdfName(null);
+    setPdfProblems([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const pickPdfProblem = (p: Problem) => {
@@ -821,24 +877,35 @@ function Tutor() {
               Finish ({submissions.length})
             </Button>
           )}
-          <Button
-            variant={teacherMode ? "default" : "outline"}
-            size="icon"
-            onClick={toggleTeacher}
-            title={teacherMode ? "Teacher tools ON" : "Turn on teacher tools (edit mark schemes)"}
-          >
-            <School className="size-4" />
-          </Button>
+          {canUseTeacherTools && (
+            <Button
+              variant={teacherMode ? "default" : "outline"}
+              size="icon"
+              onClick={toggleTeacher}
+              title={teacherMode ? "Teacher tools ON" : "Turn on teacher tools (edit mark schemes)"}
+            >
+              <School className="size-4" />
+            </Button>
+          )}
           <Button
             variant={integrityMode ? "default" : "outline"}
             size="icon"
             onClick={toggleIntegrity}
-            title={integrityMode ? "Integrity mode ON — no answers, work logged" : "Turn on integrity mode (supervised, no answers)"}
+            title={
+              integrityMode
+                ? "Integrity mode ON — no answers, work logged"
+                : "Turn on integrity mode (supervised, no answers)"
+            }
           >
             {integrityMode ? <ShieldCheck className="size-4" /> : <Shield className="size-4" />}
           </Button>
           {integrityMode && (
-            <Button variant="outline" size="icon" onClick={onIntegrityExport} title="Export tamper-evident integrity report">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={onIntegrityExport}
+              title="Export tamper-evident integrity report"
+            >
               <FileCheck2 className="size-4" />
             </Button>
           )}
@@ -859,8 +926,16 @@ function Tutor() {
               e.target.value = "";
             }}
           />
-          <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={pdfLoading}>
-            {pdfLoading ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Upload className="mr-2 size-4" />}
+          <Button
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={pdfLoading}
+          >
+            {pdfLoading ? (
+              <Loader2 className="mr-2 size-4 animate-spin" />
+            ) : (
+              <Upload className="mr-2 size-4" />
+            )}
             Upload PDF
           </Button>
           <Select value={examId} onValueChange={changeExam}>
@@ -887,7 +962,10 @@ function Tutor() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={difficulty} onValueChange={(v) => setDifficulty(v as "easy" | "medium" | "hard")}>
+          <Select
+            value={difficulty}
+            onValueChange={(v) => setDifficulty(v as "easy" | "medium" | "hard")}
+          >
             <SelectTrigger className="w-[110px]">
               <SelectValue />
             </SelectTrigger>
@@ -897,16 +975,30 @@ function Tutor() {
               <SelectItem value="hard">Hard</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" onClick={smartPractice} disabled={generating} title="Auto-pick your weakest topic at the right difficulty">
+          <Button
+            variant="outline"
+            onClick={smartPractice}
+            disabled={generating}
+            title="Auto-pick your weakest topic at the right difficulty"
+          >
             <Wand2 className="mr-2 size-4" />
             Smart practice
           </Button>
-          <Button variant="outline" onClick={() => generateProblem({ kind: "graph" })} disabled={generating} title="Generate a graph to sketch by hand">
+          <Button
+            variant="outline"
+            onClick={() => generateProblem({ kind: "graph" })}
+            disabled={generating}
+            title="Generate a graph to sketch by hand"
+          >
             <LineChart className="mr-2 size-4" />
             Graph challenge
           </Button>
           <Button onClick={() => generateProblem()} disabled={generating}>
-            {generating ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Sparkles className="mr-2 size-4" />}
+            {generating ? (
+              <Loader2 className="mr-2 size-4 animate-spin" />
+            ) : (
+              <Sparkles className="mr-2 size-4" />
+            )}
             {problem ? "New problem" : "Generate"}
           </Button>
         </div>
@@ -917,7 +1009,9 @@ function Tutor() {
           <div className="mx-auto max-w-3xl space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-semibold">Exam review</h2>
-              <Button variant="outline" onClick={stopExam}>Done</Button>
+              <Button variant="outline" onClick={stopExam}>
+                Done
+              </Button>
             </div>
             {submissions.length === 0 && (
               <p className="text-sm text-muted-foreground">No submissions in this session.</p>
@@ -949,446 +1043,505 @@ function Tutor() {
           </div>
         </div>
       ) : (
-        <div className="grid min-w-0 flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:grid-cols-[280px_minmax(0,1fr)_340px]">
-          {/* Problem panel */}
-          <aside className="min-w-0 overflow-y-auto rounded-xl border bg-background p-4">
-            <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Problem
-            </h2>
-            {problem ? (
-              <div className="mt-3 space-y-3">
-                <div className="rounded-md bg-muted/40 p-3 text-sm">
-                  <MathMarkdown>{`$$${problem.latex}$$`}</MathMarkdown>
-                </div>
-                <p className="text-sm text-muted-foreground">{problem.problem}</p>
-              </div>
-            ) : (
-              <p className="mt-3 text-sm text-muted-foreground">
-                Pick a topic and difficulty above, then tap Generate.
-              </p>
-            )}
-
-            {(pdfName || pdfProblems.length > 0) && (
-              <div className="mt-6">
-                <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  <FileText className="size-3" /> {pdfName ?? "PDF problems"}
+        <div className="min-h-0 min-w-0 flex-1 p-3">
+          <ResizablePanelGroup orientation={isMobile ? "vertical" : "horizontal"}>
+            {/* Problem panel — drag the handle next to it to stretch it wider */}
+            <ResizablePanel
+              defaultSize="22%"
+              minSize="12%"
+              maxSize="55%"
+              className="min-h-0 min-w-0"
+            >
+              <aside className="h-full min-w-0 overflow-y-auto rounded-xl border bg-background p-4">
+                <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Problem
                 </h2>
-                {pdfLoading ? (
-                  <p className="mt-3 text-sm text-muted-foreground">Reading PDF…</p>
-                ) : (
-                  <ul className="mt-3 space-y-2">
-                    {pdfProblems.map((p, i) => (
-                      <li key={i}>
-                        <button
-                          onClick={() => pickPdfProblem(p)}
-                          className={`w-full rounded-md border px-2 py-2 text-left text-xs hover:bg-muted/50 ${
-                            problem?.problem === p.problem ? "border-primary bg-muted/40" : ""
-                          }`}
-                        >
-                          <span className="mr-1 font-semibold">{i + 1}.</span>
-                          <span className="line-clamp-2">{p.problem}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-          </aside>
-
-          {/* Canvas */}
-          <main className="flex min-h-0 min-w-0 flex-col gap-2">
-            {problem?.steps?.length ? (
-              <div className="rounded-xl border bg-background p-2">
-                <CheckpointTracker
-                  steps={problem.steps}
-                  statuses={stepStatuses}
-                  onSelect={(i) => setCurrentStep(i)}
-                />
-              </div>
-            ) : null}
-            {problem && watchOuts.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
-                <span className="flex items-center gap-1 font-medium text-amber-700 dark:text-amber-300">
-                  <AlertCircle className="size-3.5" /> Your usual slip-ups:
-                </span>
-                {watchOuts.map((w) => (
-                  <span
-                    key={w.tag}
-                    className="rounded-full border border-amber-500/30 px-2 py-0.5 text-amber-700 dark:text-amber-300"
-                  >
-                    {w.tag}
-                    {w.count > 1 ? ` ×${w.count}` : ""}
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="grid min-w-0 grid-cols-1 gap-2 rounded-xl border bg-background p-2 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <Button
-                  size="sm"
-                  variant={tool === "pen" ? "default" : "outline"}
-                  onClick={() => setTool("pen")}
-                >
-                  <Pen className="mr-1 size-4" /> Pen
-                </Button>
-                <Button
-                  size="sm"
-                  variant={tool === "eraser" ? "default" : "outline"}
-                  onClick={() => setTool("eraser")}
-                >
-                  <Eraser className="mr-1 size-4" /> Eraser
-                </Button>
-                <div className="mx-1 h-6 w-px shrink-0 bg-border" />
-                <input
-                  type="color"
-                  value={color}
-                  onChange={(e) => setColor(e.target.value)}
-                  className="h-8 w-8 shrink-0 cursor-pointer rounded border"
-                  aria-label="Pen color"
-                />
-                <input
-                  type="range"
-                  min={1}
-                  max={10}
-                  value={size}
-                  onChange={(e) => setSize(Number(e.target.value))}
-                  className="w-24 min-w-0"
-                  aria-label="Pen size"
-                />
-                <div className="mx-1 h-6 w-px shrink-0 bg-border" />
-                <Button size="sm" variant="outline" onClick={() => canvasRef.current?.undo()}>
-                  <Undo2 className="size-4" />
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => canvasRef.current?.redo()}>
-                  <Redo2 className="size-4" />
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => canvasRef.current?.clear()}>
-                  <Trash2 className="size-4" />
-                </Button>
-              </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
-                <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={autoCheck && !examActive}
-                    disabled={examActive}
-                    onChange={(e) => setAutoCheck(e.target.checked)}
-                  />
-                  Auto-watch
-                </label>
-                <Button
-                  size="sm"
-                  onClick={() => callTutor("check")}
-                  disabled={!problem || sending || examActive}
-                  className="w-full justify-center sm:w-auto sm:min-w-[9.5rem]"
-                >
-                  {sending ? (
-                    <Loader2 className="mr-1 size-4 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="mr-1 size-4" />
-                  )}
-                  Check my work
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => setConfidencePrompt(true)}
-                  disabled={!problem || sending || examActive || confidencePrompt}
-                  className="w-full justify-center sm:w-auto"
-                  title="Grade my full solution like an exam marker"
-                >
-                  <Award className="mr-1 size-4" />
-                  Mark my work
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setTeachbackMode(true)}
-                  disabled={!problem || sending || examActive || teachbackMode}
-                  className="w-full justify-center sm:w-auto"
-                  title="Explain the idea in your own words and get scored on understanding"
-                >
-                  <GraduationCap className="mr-1 size-4" />
-                  Teach it back
-                </Button>
-                {problem?.kind === "graph" && (
-                  <Button
-                    size="sm"
-                    onClick={() => callTutor("gradegraph")}
-                    disabled={!problem || sending || examActive}
-                    className="w-full justify-center sm:w-auto"
-                    title="Grade my hand-drawn graph"
-                  >
-                    <LineChart className="mr-1 size-4" />
-                    Grade my sketch
-                  </Button>
-                )}
-                {teacherMode && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={openScheme}
-                    disabled={!problem}
-                    className="w-full justify-center sm:w-auto"
-                    title="Review and edit the mark scheme used for grading"
-                  >
-                    <ClipboardList className="mr-1 size-4" />
-                    Mark scheme
-                    {scheme ? ` (${scheme.total})` : ""}
-                  </Button>
-                )}
-              </div>
-            </div>
-            {confidencePrompt && (
-              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-2 text-sm">
-                <span className="text-muted-foreground">Before I mark — how sure are you it's right?</span>
-                <Button size="sm" variant="outline" onClick={() => submitMark(0.35)}>
-                  Not sure
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => submitMark(0.67)}>
-                  Fairly sure
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => submitMark(1)}>
-                  Very sure
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setConfidencePrompt(false)}>
-                  Cancel
-                </Button>
-              </div>
-            )}
-            {struggleOffer && !teachbackMode && !confidencePrompt && (
-              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-2 text-sm">
-                <span className="text-amber-700 dark:text-amber-300">
-                  This step looks tricky — want a hand?
-                </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setStruggleOffer(false);
-                    callTutor("check");
-                  }}
-                >
-                  Give me a nudge
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setStruggleOffer(false)}>
-                  I'm good
-                </Button>
-              </div>
-            )}
-            {teachbackMode && (
-              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-2 text-sm">
-                <GraduationCap className="size-4 shrink-0 text-primary" />
-                <span className="min-w-0 text-muted-foreground">
-                  Teach-back: explain the method in your own words in the chat box (type or use the mic), then send — I'll score your understanding.
-                </span>
-                <Button size="sm" variant="ghost" onClick={() => setTeachbackMode(false)}>
-                  Cancel
-                </Button>
-              </div>
-            )}
-            {schemeOpen && teacherMode && (
-              <div className="rounded-xl border bg-background p-3 text-sm">
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="flex items-center gap-2 font-medium">
-                    <ClipboardList className="size-4 text-primary" /> Mark scheme
-                    <span className="text-xs font-normal text-muted-foreground">
-                      total {scheme?.total ?? 0}
-                    </span>
+                {problem ? (
+                  <div className="mt-3 space-y-3">
+                    {problem.image ? (
+                      <img
+                        src={problem.image}
+                        alt={`Worksheet page${problem.page ? ` ${problem.page}` : ""}`}
+                        className="w-full rounded-md border"
+                      />
+                    ) : (
+                      <div className="rounded-md bg-muted/40 p-3 text-sm">
+                        <MathMarkdown>{`$$${problem.latex}$$`}</MathMarkdown>
+                      </div>
+                    )}
+                    <p className="text-sm text-muted-foreground">{problem.problem}</p>
                   </div>
-                  <button onClick={() => setSchemeOpen(false)} className="rounded p-1 hover:bg-muted">
-                    <X className="size-4" />
-                  </button>
-                </div>
-                {schemeLoading ? (
-                  <p className="flex items-center gap-2 text-muted-foreground">
-                    <Loader2 className="size-4 animate-spin" /> Building mark scheme…
+                ) : (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Pick a topic and difficulty above, then tap Generate.
                   </p>
-                ) : scheme ? (
-                  <div className="space-y-2">
-                    {scheme.criteria.map((c, i) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <input
-                          value={c.code}
-                          onChange={(e) => updateCriterion(i, { code: e.target.value })}
-                          className="w-14 shrink-0 rounded border bg-background px-2 py-1 text-xs"
-                          placeholder="M1"
-                        />
-                        <input
-                          value={c.description}
-                          onChange={(e) => updateCriterion(i, { description: e.target.value })}
-                          className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
-                          placeholder="What earns this mark"
-                        />
-                        <input
-                          type="number"
-                          min={0}
-                          value={c.marks}
-                          onChange={(e) => updateCriterion(i, { marks: Number(e.target.value) })}
-                          className="w-14 shrink-0 rounded border bg-background px-2 py-1 text-xs"
-                        />
+                )}
+
+                {(pdfName || pdfProblems.length > 0) && (
+                  <div className="mt-6">
+                    <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      <FileText className="size-3 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate">{pdfName ?? "PDF problems"}</span>
+                      {!pdfLoading && (
                         <button
-                          onClick={() => removeCriterion(i)}
-                          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
-                          title="Remove"
+                          onClick={removePdf}
+                          className="shrink-0 rounded p-0.5 hover:bg-muted"
+                          title="Remove this PDF"
                         >
                           <X className="size-3.5" />
                         </button>
-                      </div>
-                    ))}
-                    <div className="flex flex-wrap items-center gap-2 pt-1">
-                      <Button size="sm" variant="outline" onClick={addCriterion}>
-                        <Plus className="mr-1 size-3.5" /> Add
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={resetScheme}>
-                        Regenerate from AI
-                      </Button>
-                      <div className="flex-1" />
-                      <Button size="sm" onClick={saveSchemeNow}>
-                        Save scheme
-                      </Button>
-                    </div>
+                      )}
+                    </h2>
+                    {pdfLoading ? (
+                      <p className="mt-3 text-sm text-muted-foreground">Reading PDF…</p>
+                    ) : (
+                      <ul className="mt-3 space-y-2">
+                        {pdfProblems.map((p, i) => (
+                          <li key={i}>
+                            <button
+                              onClick={() => pickPdfProblem(p)}
+                              className={`w-full rounded-md border px-2 py-2 text-left text-xs hover:bg-muted/50 ${
+                                problem?.problem === p.problem ? "border-primary bg-muted/40" : ""
+                              }`}
+                            >
+                              <span className="mr-1 font-semibold">{i + 1}.</span>
+                              <span className="line-clamp-2">{p.problem}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
-                ) : (
-                  <p className="text-muted-foreground">No mark scheme loaded.</p>
                 )}
-              </div>
-            )}
-            <div className="min-h-0 flex-1">
-              <HandwritingCanvas ref={canvasRef} tool={tool} color={color} size={size} />
-            </div>
-          </main>
+              </aside>
+            </ResizablePanel>
 
-          {/* Chat */}
-          <aside className="flex min-h-0 min-w-0 flex-col rounded-xl border bg-background">
-            <div className="flex items-center justify-between border-b px-4 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              <span>Tutor{examActive ? " (off — exam mode)" : ""}</span>
-              <button
-                onClick={() => {
-                  if (speakReplies) stopSpeaking();
-                  setSpeakReplies((v) => !v);
-                }}
-                className="flex items-center gap-1 rounded px-2 py-1 hover:bg-muted"
-                title={speakReplies ? "Mute spoken replies" : "Speak replies aloud"}
-              >
-                {speakReplies ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5" />}
-                {speakReplies ? "Voice on" : "Voice off"}
-              </button>
-            </div>
-            <div className="flex-1 space-y-3 overflow-y-auto p-3">
-              {messages.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  {examActive
-                    ? "Tutor is silent during exam mode. Use Submit when finished."
-                    : "The tutor will speak up when there's something useful to say. You can also ask anything below."}
-                </p>
-              ) : (
-                messages.map((m, i) => (
-                  <div key={i}>
-                    <div
-                      className={
-                        m.role === "user"
-                          ? "ml-6 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
-                          : "mr-6 rounded-lg bg-muted px-3 py-2 text-sm"
-                      }
+            <ResizableHandle withHandle className={isMobile ? "my-1" : "mx-1"} />
+
+            {/* Canvas */}
+            <ResizablePanel defaultSize="52%" minSize="30%" className="min-h-0 min-w-0">
+              <main className="flex h-full min-h-0 min-w-0 flex-col gap-2">
+                {problem?.steps?.length ? (
+                  <div className="rounded-xl border bg-background p-2">
+                    <CheckpointTracker
+                      steps={problem.steps}
+                      statuses={stepStatuses}
+                      onSelect={(i) => setCurrentStep(i)}
+                    />
+                  </div>
+                ) : null}
+                {problem && watchOuts.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+                    <span className="flex items-center gap-1 font-medium text-amber-700 dark:text-amber-300">
+                      <AlertCircle className="size-3.5" /> Your usual slip-ups:
+                    </span>
+                    {watchOuts.map((w) => (
+                      <span
+                        key={w.tag}
+                        className="rounded-full border border-amber-500/30 px-2 py-0.5 text-amber-700 dark:text-amber-300"
+                      >
+                        {w.tag}
+                        {w.count > 1 ? ` ×${w.count}` : ""}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="grid min-w-0 grid-cols-1 gap-2 rounded-xl border bg-background p-2 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={tool === "pen" ? "default" : "outline"}
+                      onClick={() => setTool("pen")}
                     >
-                      {m.role === "assistant" ? <MathMarkdown>{m.content}</MathMarkdown> : m.content}
-                    </div>
-                    {m.role === "assistant" && m.lowConfidence && m.readAs && (
-                      <div className="mr-6 mt-1 flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
-                        <AlertCircle className="size-3 shrink-0" />
-                        <span className="flex items-center gap-1">
-                          I read this as:
-                          <MathMarkdown>{`$${m.readAs}$`}</MathMarkdown>
-                          — rewrite if wrong.
+                      <Pen className="mr-1 size-4" /> Pen
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={tool === "eraser" ? "default" : "outline"}
+                      onClick={() => setTool("eraser")}
+                    >
+                      <Eraser className="mr-1 size-4" /> Eraser
+                    </Button>
+                    <div className="mx-1 h-6 w-px shrink-0 bg-border" />
+                    <input
+                      type="color"
+                      value={color}
+                      onChange={(e) => setColor(e.target.value)}
+                      className="h-8 w-8 shrink-0 cursor-pointer rounded border"
+                      aria-label="Pen color"
+                    />
+                    <input
+                      type="range"
+                      min={1}
+                      max={10}
+                      value={size}
+                      onChange={(e) => setSize(Number(e.target.value))}
+                      className="w-24 min-w-0"
+                      aria-label="Pen size"
+                    />
+                    <div className="mx-1 h-6 w-px shrink-0 bg-border" />
+                    <Button size="sm" variant="outline" onClick={() => canvasRef.current?.undo()}>
+                      <Undo2 className="size-4" />
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => canvasRef.current?.redo()}>
+                      <Redo2 className="size-4" />
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => canvasRef.current?.clear()}>
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
+                    <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={autoCheck && !examActive}
+                        disabled={examActive}
+                        onChange={(e) => setAutoCheck(e.target.checked)}
+                      />
+                      Auto-watch
+                    </label>
+                    <Button
+                      size="sm"
+                      onClick={() => callTutor("check")}
+                      disabled={!problem || sending || examActive}
+                      className="w-full justify-center sm:w-auto sm:min-w-[9.5rem]"
+                    >
+                      {sending ? (
+                        <Loader2 className="mr-1 size-4 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="mr-1 size-4" />
+                      )}
+                      Check my work
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setConfidencePrompt(true)}
+                      disabled={!problem || sending || examActive || confidencePrompt}
+                      className="w-full justify-center sm:w-auto"
+                      title="Grade my full solution like an exam marker"
+                    >
+                      <Award className="mr-1 size-4" />
+                      Mark my work
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setTeachbackMode(true)}
+                      disabled={!problem || sending || examActive || teachbackMode}
+                      className="w-full justify-center sm:w-auto"
+                      title="Explain the idea in your own words and get scored on understanding"
+                    >
+                      <GraduationCap className="mr-1 size-4" />
+                      Teach it back
+                    </Button>
+                    {problem?.kind === "graph" && (
+                      <Button
+                        size="sm"
+                        onClick={() => callTutor("gradegraph")}
+                        disabled={!problem || sending || examActive}
+                        className="w-full justify-center sm:w-auto"
+                        title="Grade my hand-drawn graph"
+                      >
+                        <LineChart className="mr-1 size-4" />
+                        Grade my sketch
+                      </Button>
+                    )}
+                    {teacherMode && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={openScheme}
+                        disabled={!problem}
+                        className="w-full justify-center sm:w-auto"
+                        title="Review and edit the mark scheme used for grading"
+                      >
+                        <ClipboardList className="mr-1 size-4" />
+                        Mark scheme
+                        {scheme ? ` (${scheme.total})` : ""}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                {confidencePrompt && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-2 text-sm">
+                    <span className="text-muted-foreground">
+                      Before I mark — how sure are you it's right?
+                    </span>
+                    <Button size="sm" variant="outline" onClick={() => submitMark(0.35)}>
+                      Not sure
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => submitMark(0.67)}>
+                      Fairly sure
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => submitMark(1)}>
+                      Very sure
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setConfidencePrompt(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                )}
+                {struggleOffer && !teachbackMode && !confidencePrompt && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-2 text-sm">
+                    <span className="text-amber-700 dark:text-amber-300">
+                      This step looks tricky — want a hand?
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setStruggleOffer(false);
+                        callTutor("check");
+                      }}
+                    >
+                      Give me a nudge
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setStruggleOffer(false)}>
+                      I'm good
+                    </Button>
+                  </div>
+                )}
+                {teachbackMode && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-2 text-sm">
+                    <GraduationCap className="size-4 shrink-0 text-primary" />
+                    <span className="min-w-0 text-muted-foreground">
+                      Teach-back: explain the method in your own words in the chat box (type or use
+                      the mic), then send — I'll score your understanding.
+                    </span>
+                    <Button size="sm" variant="ghost" onClick={() => setTeachbackMode(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                )}
+                {schemeOpen && teacherMode && (
+                  <div className="rounded-xl border bg-background p-3 text-sm">
+                    <div className="mb-2 flex items-center justify-between">
+                      <div className="flex items-center gap-2 font-medium">
+                        <ClipboardList className="size-4 text-primary" /> Mark scheme
+                        <span className="text-xs font-normal text-muted-foreground">
+                          total {scheme?.total ?? 0}
                         </span>
                       </div>
-                    )}
-                    {m.role === "assistant" && m.marks && (
-                      <div className="mr-6 mt-1 rounded-lg border bg-card p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1.5 text-sm font-semibold">
-                            <Award className="size-4 text-primary" />
-                            {m.marks.awarded}/{m.marks.total} marks
+                      <button
+                        onClick={() => setSchemeOpen(false)}
+                        className="rounded p-1 hover:bg-muted"
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </div>
+                    {schemeLoading ? (
+                      <p className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="size-4 animate-spin" /> Building mark scheme…
+                      </p>
+                    ) : scheme ? (
+                      <div className="space-y-2">
+                        {scheme.criteria.map((c, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <input
+                              value={c.code}
+                              onChange={(e) => updateCriterion(i, { code: e.target.value })}
+                              className="w-14 shrink-0 rounded border bg-background px-2 py-1 text-xs"
+                              placeholder="M1"
+                            />
+                            <input
+                              value={c.description}
+                              onChange={(e) => updateCriterion(i, { description: e.target.value })}
+                              className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
+                              placeholder="What earns this mark"
+                            />
+                            <input
+                              type="number"
+                              min={0}
+                              value={c.marks}
+                              onChange={(e) =>
+                                updateCriterion(i, { marks: Number(e.target.value) })
+                              }
+                              className="w-14 shrink-0 rounded border bg-background px-2 py-1 text-xs"
+                            />
+                            <button
+                              onClick={() => removeCriterion(i)}
+                              className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
+                              title="Remove"
+                            >
+                              <X className="size-3.5" />
+                            </button>
                           </div>
-                          {m.marks.grade && (
-                            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                              {m.marks.grade}
-                            </span>
-                          )}
+                        ))}
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <Button size="sm" variant="outline" onClick={addCriterion}>
+                            <Plus className="mr-1 size-3.5" /> Add
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={resetScheme}>
+                            Regenerate from AI
+                          </Button>
+                          <div className="flex-1" />
+                          <Button size="sm" onClick={saveSchemeNow}>
+                            Save scheme
+                          </Button>
                         </div>
-                        <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className="h-full bg-primary transition-all"
-                            style={{ width: `${Math.round((m.marks.awarded / m.marks.total) * 100)}%` }}
-                          />
-                        </div>
-                        {m.marks.comment && (
-                          <p className="mt-2 text-xs text-muted-foreground">{m.marks.comment}</p>
-                        )}
                       </div>
-                    )}
-                    {!examActive && i === lastAssistantIdx && lastAssistant && (
-                      <div className="mr-6">
-                        <HintLadder
-                          rung={lastAssistant.rung ?? 0}
-                          onMore={askMore}
-                          onExplain={askExplain}
-                          showExplain={!!lastAssistant.stuck}
-                          disabled={sending}
-                        />
-                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">No mark scheme loaded.</p>
                     )}
                   </div>
-                ))
-              )}
-              <div ref={chatEndRef} />
-            </div>
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] gap-2 border-t p-2">
-              <Button
-                type="button"
-                variant={listening ? "default" : "outline"}
-                size="icon"
-                onClick={toggleMic}
-                title={listening ? "Stop listening" : "Hold-to-talk"}
-                disabled={sending || examActive}
-                className="shrink-0"
-              >
-                {listening ? <MicOff className="size-4" /> : <Mic className="size-4" />}
-              </Button>
-              <Input
-                className="min-w-0"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    sendChat();
-                  }
-                }}
-                placeholder={
-                  examActive
-                    ? "Chat disabled during exam"
-                    : teachbackMode
-                      ? "Explain the method in your own words…"
-                      : listening
-                        ? "Listening…"
-                        : problem
-                          ? "Ask or tap the mic…"
-                          : "Generate a problem first"
-                }
-                disabled={!problem || sending || examActive}
-              />
-              <Button
-                onClick={sendChat}
-                disabled={!problem || sending || examActive || !chatInput.trim()}
-                className="shrink-0"
-              >
-                <Send className="size-4" />
-              </Button>
-            </div>
-          </aside>
+                )}
+                <div className="min-h-0 flex-1">
+                  <HandwritingCanvas ref={canvasRef} tool={tool} color={color} size={size} />
+                </div>
+              </main>
+            </ResizablePanel>
+
+            <ResizableHandle withHandle className={isMobile ? "my-1" : "mx-1"} />
+
+            {/* Chat */}
+            <ResizablePanel
+              defaultSize="26%"
+              minSize="14%"
+              maxSize="55%"
+              className="min-h-0 min-w-0"
+            >
+              <aside className="flex h-full min-h-0 min-w-0 flex-col rounded-xl border bg-background">
+                <div className="flex items-center justify-between border-b px-4 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  <span>Tutor{examActive ? " (off — exam mode)" : ""}</span>
+                  <button
+                    onClick={() => {
+                      if (speakReplies) stopSpeaking();
+                      setSpeakReplies((v) => !v);
+                    }}
+                    className="flex items-center gap-1 rounded px-2 py-1 hover:bg-muted"
+                    title={speakReplies ? "Mute spoken replies" : "Speak replies aloud"}
+                  >
+                    {speakReplies ? (
+                      <Volume2 className="size-3.5" />
+                    ) : (
+                      <VolumeX className="size-3.5" />
+                    )}
+                    {speakReplies ? "Voice on" : "Voice off"}
+                  </button>
+                </div>
+                <div className="flex-1 space-y-3 overflow-y-auto p-3">
+                  {messages.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      {examActive
+                        ? "Tutor is silent during exam mode. Use Submit when finished."
+                        : "The tutor will speak up when there's something useful to say. You can also ask anything below."}
+                    </p>
+                  ) : (
+                    messages.map((m, i) => (
+                      <div key={i}>
+                        <div
+                          className={
+                            m.role === "user"
+                              ? "ml-6 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
+                              : "mr-6 rounded-lg bg-muted px-3 py-2 text-sm"
+                          }
+                        >
+                          {m.role === "assistant" ? (
+                            <MathMarkdown>{m.content}</MathMarkdown>
+                          ) : (
+                            m.content
+                          )}
+                        </div>
+                        {m.role === "assistant" && m.lowConfidence && m.readAs && (
+                          <div className="mr-6 mt-1 flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+                            <AlertCircle className="size-3 shrink-0" />
+                            <span className="flex items-center gap-1">
+                              I read this as:
+                              <MathMarkdown>{`$${m.readAs}$`}</MathMarkdown>— rewrite if wrong.
+                            </span>
+                          </div>
+                        )}
+                        {m.role === "assistant" && m.marks && (
+                          <div className="mr-6 mt-1 rounded-lg border bg-card p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 text-sm font-semibold">
+                                <Award className="size-4 text-primary" />
+                                {m.marks.awarded}/{m.marks.total} marks
+                              </div>
+                              {m.marks.grade && (
+                                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                                  {m.marks.grade}
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full bg-primary transition-all"
+                                style={{
+                                  width: `${Math.round((m.marks.awarded / m.marks.total) * 100)}%`,
+                                }}
+                              />
+                            </div>
+                            {m.marks.comment && (
+                              <p className="mt-2 text-xs text-muted-foreground">
+                                {m.marks.comment}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {!examActive && i === lastAssistantIdx && lastAssistant && (
+                          <div className="mr-6">
+                            <HintLadder
+                              rung={lastAssistant.rung ?? 0}
+                              onMore={askMore}
+                              onExplain={askExplain}
+                              showExplain={!!lastAssistant.stuck}
+                              disabled={sending}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+                <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] gap-2 border-t p-2">
+                  <Button
+                    type="button"
+                    variant={listening ? "default" : "outline"}
+                    size="icon"
+                    onClick={toggleMic}
+                    title={listening ? "Stop listening" : "Hold-to-talk"}
+                    disabled={sending || examActive}
+                    className="shrink-0"
+                  >
+                    {listening ? <MicOff className="size-4" /> : <Mic className="size-4" />}
+                  </Button>
+                  <Input
+                    className="min-w-0"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        sendChat();
+                      }
+                    }}
+                    placeholder={
+                      examActive
+                        ? "Chat disabled during exam"
+                        : teachbackMode
+                          ? "Explain the method in your own words…"
+                          : listening
+                            ? "Listening…"
+                            : problem
+                              ? "Ask or tap the mic…"
+                              : "Generate a problem first"
+                    }
+                    disabled={!problem || sending || examActive}
+                  />
+                  <Button
+                    onClick={sendChat}
+                    disabled={!problem || sending || examActive || !chatInput.trim()}
+                    className="shrink-0"
+                  >
+                    <Send className="size-4" />
+                  </Button>
+                </div>
+              </aside>
+            </ResizablePanel>
+          </ResizablePanelGroup>
         </div>
       )}
     </div>

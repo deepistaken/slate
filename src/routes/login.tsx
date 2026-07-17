@@ -1,11 +1,11 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { GraduationCap, Loader2, School } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Turnstile, turnstileEnabled } from "@/components/Turnstile";
-import { useAuth } from "@/lib/auth";
+import { useAuth, type UserRole } from "@/lib/auth";
 
 export const Route = createFileRoute("/login")({
   validateSearch: (search: Record<string, unknown>): { redirect?: string } => ({
@@ -23,6 +23,7 @@ function LoginPage() {
   const { redirect } = Route.useSearch();
 
   const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [role, setRole] = useState<UserRole>("student");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [captcha, setCaptcha] = useState<string | null>(null);
@@ -48,8 +49,10 @@ function LoginPage() {
       return;
     }
     setBusy(true);
-    const fn = mode === "signin" ? signIn : signUp;
-    const { error: err } = await fn(email.trim(), password, captcha ?? undefined);
+    const { error: err } =
+      mode === "signin"
+        ? await signIn(email.trim(), password, captcha ?? undefined)
+        : await signUp(email.trim(), password, role, captcha ?? undefined);
     setBusy(false);
     if (err) {
       setError(err);
@@ -85,12 +88,48 @@ function LoginPage() {
 
         {!configured && (
           <div className="mt-6 rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300">
-            Accounts aren't configured yet. Add your Supabase keys to{" "}
-            <code>.dev.vars</code> and restart the dev server.
+            Accounts aren't configured yet. Add your Supabase keys to <code>.dev.vars</code> and
+            restart the dev server.
           </div>
         )}
 
         <form onSubmit={onSubmit} className="mt-8 space-y-4">
+          {mode === "signup" && (
+            <div className="space-y-1.5">
+              <span className="text-sm font-medium">I am a…</span>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRole("student")}
+                  disabled={!configured || busy}
+                  className={`flex flex-col items-center gap-1 rounded-md border p-3 text-sm transition-colors ${
+                    role === "student"
+                      ? "border-primary bg-primary/5 font-medium"
+                      : "text-muted-foreground hover:bg-muted/50"
+                  }`}
+                >
+                  <GraduationCap className="size-5" />
+                  Student
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRole("teacher")}
+                  disabled={!configured || busy}
+                  className={`flex flex-col items-center gap-1 rounded-md border p-3 text-sm transition-colors ${
+                    role === "teacher"
+                      ? "border-primary bg-primary/5 font-medium"
+                      : "text-muted-foreground hover:bg-muted/50"
+                  }`}
+                >
+                  <School className="size-5" />
+                  Teacher
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                This choice is permanent — it can't be changed after signing up.
+              </p>
+            </div>
+          )}
           <div className="space-y-1.5">
             <label htmlFor="email" className="text-sm font-medium">
               Email

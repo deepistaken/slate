@@ -21,8 +21,36 @@
 create table if not exists public.profiles (
   id         uuid primary key references auth.users (id) on delete cascade,
   email      text,
+  role       text not null default 'student',
   created_at timestamptz not null default now()
 );
+
+-- Safe re-run on databases created before the role column existed.
+alter table public.profiles add column if not exists role text not null default 'student';
+
+do $$ begin
+  alter table public.profiles
+    add constraint profiles_role_check check (role in ('student', 'teacher'));
+exception when duplicate_object then null; end $$;
+
+-- Role is chosen at signup and can never be changed afterwards — not even by
+-- the owner of the row (the "update own" policy would otherwise allow it).
+create or replace function public.prevent_role_change()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.role is distinct from old.role then
+    raise exception 'role cannot be changed after signup';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_role_immutable on public.profiles;
+create trigger profiles_role_immutable
+  before update on public.profiles
+  for each row execute function public.prevent_role_change();
 
 alter table public.profiles enable row level security;
 
@@ -44,8 +72,12 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, email)
-  values (new.id, new.email)
+  insert into public.profiles (id, email, role)
+  values (
+    new.id,
+    new.email,
+    case when new.raw_user_meta_data ->> 'role' = 'teacher' then 'teacher' else 'student' end
+  )
   on conflict (id) do nothing;
   return new;
 end;

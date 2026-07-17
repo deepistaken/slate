@@ -6,7 +6,10 @@ import { generateJson } from "@/lib/ai-json";
 import { guardAi } from "@/lib/api-guard";
 
 const BodySchema = z.object({
-  text: z.string().min(1).max(60000),
+  text: z.string().min(1).max(60000).optional(),
+  // Per-page text; lets the model report which page each problem is on so the
+  // client can show the matching page screenshot.
+  pages: z.array(z.string().max(20000)).min(1).max(40).optional(),
 });
 
 export const Route = createFileRoute("/api/extract-problems")({
@@ -18,22 +21,31 @@ export const Route = createFileRoute("/api/extract-problems")({
           if (!gate.ok) return gate.response;
 
           const body = BodySchema.parse(await request.json());
+          if (!body.text && !body.pages) {
+            return new Response("Provide `text` or `pages`.", { status: 400 });
+          }
           const model = getModel(MODELS.generate);
+
+          const sourceText = body.pages
+            ? body.pages.map((t, i) => `[PAGE ${i + 1}]\n${t}`).join("\n\n")
+            : body.text!;
 
           const prompt = `Below is raw text extracted from a math worksheet PDF. Identify every distinct math problem/exercise the student is asked to solve. Skip instructions, headers, answer keys, page numbers.
 
 Return strict JSON, no prose, no code fences:
 {
   "problems": [
-    { "problem": "plain text statement", "latex": "LaTeX form without $ delimiters", "outline": "short \\n-separated bullets of intended solution steps, tutor-only", "steps": ["3-6 short student-facing checkpoint goals, 2-6 words each"] }
+    { "problem": "plain text statement", "latex": "LaTeX form without $ delimiters", "outline": "short \\n-separated bullets of intended solution steps, tutor-only", "steps": ["3-6 short student-facing checkpoint goals, 2-6 words each"], "page": 1 }
   ]
 }
+
+"page" is the 1-based page number the problem appears on ([PAGE n] markers in the text). If there are no page markers, omit "page".
 
 If a problem already has multiple parts (a), (b), (c), keep them together as one entry. Limit to at most 20 problems.
 
 PDF TEXT:
 """
-${body.text.slice(0, 50000)}
+${sourceText.slice(0, 50000)}
 """`;
 
           const json = await generateJson<{ problems?: unknown[] }>({ model, prompt });
