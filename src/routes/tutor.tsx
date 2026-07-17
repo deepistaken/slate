@@ -145,6 +145,7 @@ function Tutor() {
     setTopic(next.topics[0]);
   };
   const [problem, setProblem] = useState<Problem | null>(null);
+  const [problemOverlayHidden, setProblemOverlayHidden] = useState(false);
   const [generating, setGenerating] = useState(false);
 
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -321,6 +322,7 @@ function Tutor() {
 
   const initProblem = (p: Problem) => {
     setProblem(p);
+    setProblemOverlayHidden(false);
     setMessages([]);
     const n = p.steps?.length ?? 0;
     setCurrentStep(0);
@@ -1077,11 +1079,9 @@ function Tutor() {
                 {problem ? (
                   <div className="mt-3 space-y-3">
                     {problem.image ? (
-                      <img
-                        src={problem.image}
-                        alt={`Worksheet page${problem.page ? ` ${problem.page}` : ""}`}
-                        className="w-full rounded-md border"
-                      />
+                      <p className="text-xs text-muted-foreground">
+                        The problem is shown on the work area.
+                      </p>
                     ) : (
                       <>
                         <div className="rounded-md bg-muted/40 p-3 text-sm">
@@ -1442,8 +1442,35 @@ function Tutor() {
                   </ResizablePanel>
                   <ResizableHandle withHandle className="my-1" />
                   <ResizablePanel defaultSize="70%" minSize="30%" className="min-h-0">
-                    <div className="h-full min-h-0">
+                    <div className="relative h-full min-h-0">
                       <HandwritingCanvas ref={canvasRef} tool={tool} color={color} size={size} />
+                      {problem?.image && !problemOverlayHidden && (
+                        <div className="absolute inset-x-3 top-3 flex justify-center">
+                          <div className="relative max-w-full">
+                            <img
+                              src={problem.image}
+                              alt={`Worksheet problem${problem.page ? ` (page ${problem.page})` : ""}`}
+                              className="max-h-56 w-auto max-w-full rounded-md border bg-white shadow-md"
+                            />
+                            <button
+                              onClick={() => setProblemOverlayHidden(true)}
+                              className="absolute -right-2 -top-2 rounded-full border bg-background p-1 text-muted-foreground shadow-sm hover:text-destructive"
+                              title="Hide the problem image"
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {problem?.image && problemOverlayHidden && (
+                        <button
+                          onClick={() => setProblemOverlayHidden(false)}
+                          className="absolute right-3 top-3 flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground shadow-sm hover:bg-muted"
+                          title="Show the problem image"
+                        >
+                          <FileText className="size-3.5" /> Show problem
+                        </button>
+                      )}
                     </div>
                   </ResizablePanel>
                 </ResizablePanelGroup>
