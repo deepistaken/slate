@@ -143,8 +143,25 @@ export type DetectedProblem = {
 // (optionally prefixed Question/Aufgabe/Exercice/Q…) followed by real content.
 const QUESTION_START =
   /^\s*(?:(?:question|aufgabe|exercice|exercise|problem|q)\s*[.:]?\s*)?\d{1,2}(?:\.\d{1,2})*\s*[.)\]:]?\s+\S{2,}/i;
+// A line that is ONLY a question marker ("1.", "3.1", "Q2") — worksheets often
+// put the number on its own line with the actual task below it.
+const QUESTION_MARKER_ONLY =
+  /^\s*(?:(?:question|aufgabe|exercice|exercise|problem|q)\s*[.:]?\s*)?\d{1,2}(?:\.\d{1,2})*\s*[.)\]:]?\s*$/i;
 // …but "10 marks", "3 points", bare page numbers etc. are not questions.
 const NOT_A_QUESTION = /^\s*\d+\s*(?:marks?|points?|punkte?|pts)\b|^\s*\d+\s*$/i;
+
+function isQuestionStart(page: PdfPage, i: number): boolean {
+  const s = page.lines[i].str;
+  if (/^\s*\d+\s*(?:marks?|points?|punkte?|pts)\b/i.test(s)) return false;
+  if (QUESTION_START.test(s)) return true;
+  // A marker-only line counts when more content follows closely below it —
+  // that rules out lone page numbers in the footer.
+  if (QUESTION_MARKER_ONLY.test(s)) {
+    const next = page.lines[i + 1];
+    return !!next && next.y - page.lines[i].y < 80;
+  }
+  return false;
+}
 
 /**
  * Purely local question detection — no AI. Splits each page at numbered
@@ -155,8 +172,8 @@ export function detectProblems(pages: PdfPage[]): DetectedProblem[] {
   const out: DetectedProblem[] = [];
   pages.forEach((page, pageIndex) => {
     const starts: number[] = [];
-    page.lines.forEach((l, i) => {
-      if (QUESTION_START.test(l.str) && !NOT_A_QUESTION.test(l.str)) starts.push(i);
+    page.lines.forEach((_, i) => {
+      if (isQuestionStart(page, i)) starts.push(i);
     });
     starts.forEach((start, s) => {
       let end = s + 1 < starts.length ? starts[s + 1] - 1 : page.lines.length - 1;
