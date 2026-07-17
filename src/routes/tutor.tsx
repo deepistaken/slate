@@ -644,7 +644,7 @@ function Tutor() {
     setPdfName(file.name);
     setPdfProblems([]);
     try {
-      const { extractPdfPages } = await import("@/lib/pdf");
+      const { extractPdfPages, cropProblemImage } = await import("@/lib/pdf");
       const pages = await extractPdfPages(file);
       if (!pages.some((p) => p.text.trim())) {
         toast.error("No selectable text found in that PDF.");
@@ -656,12 +656,25 @@ function Tutor() {
         handleApiError(res.status, await res.text());
         return;
       }
-      const data = (await res.json()) as { problems: Problem[] };
-      // Attach the page screenshot so the problem shows as it appears in print.
-      const problems = (data.problems ?? []).map((p) => ({
-        ...p,
-        image: p.page && pages[p.page - 1] ? pages[p.page - 1].image : pages[0]?.image,
-      }));
+      const data = (await res.json()) as {
+        problems: (Problem & { startLine?: number; endLine?: number })[];
+      };
+      // Cut each problem's screenshot out of its page so it shows exactly as
+      // printed; fall back to the full page when line positions are missing.
+      const problems = await Promise.all(
+        (data.problems ?? []).map(async (p) => {
+          const page = p.page ? pages[p.page - 1] : undefined;
+          let image = page?.image ?? pages[0]?.image;
+          if (page && p.startLine && p.endLine && p.endLine >= p.startLine) {
+            try {
+              image = await cropProblemImage(page, p.startLine, p.endLine);
+            } catch {
+              // keep the full-page screenshot
+            }
+          }
+          return { ...p, image };
+        }),
+      );
       setPdfProblems(problems);
       if (!problems.length) toast.error("Couldn't find any problems in that PDF.");
     } catch (e) {
@@ -675,6 +688,11 @@ function Tutor() {
     setPdfName(null);
     setPdfProblems([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    toast.info("PDF removed.");
+  };
+
+  const removePdfProblem = (i: number) => {
+    setPdfProblems((prev) => prev.filter((_, idx) => idx !== i));
   };
 
   const pickPdfProblem = (p: Problem) => {
@@ -1079,33 +1097,42 @@ function Tutor() {
 
                 {(pdfName || pdfProblems.length > 0) && (
                   <div className="mt-6">
-                    <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      <FileText className="size-3 shrink-0" />
-                      <span className="min-w-0 flex-1 truncate">{pdfName ?? "PDF problems"}</span>
+                    <div className="flex items-center justify-between gap-2">
+                      <h2 className="flex min-w-0 items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        <FileText className="size-3 shrink-0" />
+                        <span className="min-w-0 truncate">{pdfName ?? "PDF problems"}</span>
+                      </h2>
                       {!pdfLoading && (
                         <button
                           onClick={removePdf}
-                          className="shrink-0 rounded p-0.5 hover:bg-muted"
-                          title="Remove this PDF"
+                          className="flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          title="Remove this PDF and all its problems"
                         >
-                          <X className="size-3.5" />
+                          <Trash2 className="size-3" /> Remove PDF
                         </button>
                       )}
-                    </h2>
+                    </div>
                     {pdfLoading ? (
                       <p className="mt-3 text-sm text-muted-foreground">Reading PDF…</p>
                     ) : (
                       <ul className="mt-3 space-y-2">
                         {pdfProblems.map((p, i) => (
-                          <li key={i}>
+                          <li key={i} className="relative">
                             <button
                               onClick={() => pickPdfProblem(p)}
-                              className={`w-full rounded-md border px-2 py-2 text-left text-xs hover:bg-muted/50 ${
+                              className={`w-full rounded-md border px-2 py-2 pr-7 text-left text-xs hover:bg-muted/50 ${
                                 problem?.problem === p.problem ? "border-primary bg-muted/40" : ""
                               }`}
                             >
                               <span className="mr-1 font-semibold">{i + 1}.</span>
                               <span className="line-clamp-2">{p.problem}</span>
+                            </button>
+                            <button
+                              onClick={() => removePdfProblem(i)}
+                              className="absolute right-1.5 top-1.5 rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              title="Remove this problem from the list"
+                            >
+                              <X className="size-3.5" />
                             </button>
                           </li>
                         ))}

@@ -27,19 +27,28 @@ export const Route = createFileRoute("/api/extract-problems")({
           const model = getModel(MODELS.generate);
 
           const sourceText = body.pages
-            ? body.pages.map((t, i) => `[PAGE ${i + 1}]\n${t}`).join("\n\n")
+            ? body.pages
+                .map(
+                  (t, i) =>
+                    `[PAGE ${i + 1}]\n` +
+                    t
+                      .split("\n")
+                      .map((line, n) => `${n + 1}: ${line}`)
+                      .join("\n"),
+                )
+                .join("\n\n")
             : body.text!;
 
-          const prompt = `Below is raw text extracted from a math worksheet PDF. Identify every distinct math problem/exercise the student is asked to solve. Skip instructions, headers, answer keys, page numbers.
+          const prompt = `Below is raw text extracted from a math worksheet PDF${body.pages ? ", with [PAGE n] markers and numbered lines" : ""}. Identify every distinct math problem/exercise the student is asked to solve. Skip instructions, headers, answer keys, page numbers.
 
 Return strict JSON, no prose, no code fences:
 {
   "problems": [
-    { "problem": "plain text statement", "latex": "LaTeX form without $ delimiters", "outline": "short \\n-separated bullets of intended solution steps, tutor-only", "steps": ["3-6 short student-facing checkpoint goals, 2-6 words each"], "page": 1 }
+    { "problem": "plain text statement", "latex": "LaTeX form without $ delimiters", "outline": "short \\n-separated bullets of intended solution steps, tutor-only", "steps": ["3-6 short student-facing checkpoint goals, 2-6 words each"], "page": 1, "startLine": 4, "endLine": 9 }
   ]
 }
 
-"page" is the 1-based page number the problem appears on ([PAGE n] markers in the text). If there are no page markers, omit "page".
+"page" is the 1-based page number the problem appears on ([PAGE n] markers). "startLine"/"endLine" are the 1-based numbered lines on that page where the problem's printed text starts and ends (inclusive — include every sub-part and any diagram caption lines between them). If there are no page markers or line numbers, omit these three fields.
 
 If a problem already has multiple parts (a), (b), (c), keep them together as one entry. Limit to at most 20 problems.
 
