@@ -4,10 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 
-// Force the standalone Node server preset. Without this, Nitro auto-detects
-// wrangler.jsonc and builds a Cloudflare Worker (which `node` can't run).
-process.env.NITRO_PRESET = "node-server";
-process.env.SERVER_PRESET = "node-server";
+import { nitro } from "nitro/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -39,8 +36,10 @@ export default defineConfig({
   plugins: [
     tsConfigPaths(),
     tailwindcss(),
-    // target maps to the Nitro "node-server" preset → .output/server/index.mjs
-    tanstackStart({ target: "node-server" }),
+    tanstackStart(),
+    // Explicit preset — otherwise Nitro auto-detects wrangler.jsonc and builds
+    // a Cloudflare Worker, which `node .output/server/index.mjs` can't run.
+    nitro({ preset: "node-server" }),
     viteReact(),
   ],
 });
