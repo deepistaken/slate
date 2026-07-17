@@ -649,39 +649,49 @@ function Tutor() {
     setPdfName(file.name);
     setPdfProblems([]);
     try {
-      const { extractPdfPages, cropProblemImage } = await import("@/lib/pdf");
+      // Fully local — no AI call: detect numbered questions from the text
+      // layout and cut each one's screenshot out of its page.
+      const { extractPdfPages, cropProblemImage, detectProblems } = await import("@/lib/pdf");
       const pages = await extractPdfPages(file);
       if (!pages.some((p) => p.text.trim())) {
         toast.error("No selectable text found in that PDF.");
         setPdfName(null);
         return;
       }
-      const res = await callAi("/api/extract-problems", { pages: pages.map((p) => p.text) });
-      if (!res.ok) {
-        handleApiError(res.status, await res.text());
-        return;
-      }
-      const data = (await res.json()) as {
-        problems: (Problem & { startLine?: number; endLine?: number })[];
-      };
-      // Cut each problem's screenshot out of its page so it shows exactly as
-      // printed; fall back to the full page when line positions are missing.
-      const problems = await Promise.all(
-        (data.problems ?? []).map(async (p) => {
-          const page = p.page ? pages[p.page - 1] : undefined;
-          let image = page?.image ?? pages[0]?.image;
-          if (page && p.startLine && p.endLine && p.endLine >= p.startLine) {
+      const detected = detectProblems(pages);
+      let problems: Problem[];
+      if (detected.length) {
+        problems = await Promise.all(
+          detected.map(async (d) => {
+            const page = pages[d.pageIndex];
+            let image = page.image;
             try {
-              image = await cropProblemImage(page, p.startLine, p.endLine);
+              image = await cropProblemImage(page, d.startLine, d.endLine);
             } catch {
               // keep the full-page screenshot
             }
-          }
-          return { ...p, image };
-        }),
-      );
+            return {
+              problem: d.text.replace(/\s+/g, " ").slice(0, 600),
+              latex: "",
+              outline: "",
+              page: d.pageIndex + 1,
+              image,
+            };
+          }),
+        );
+        toast.success(`Found ${problems.length} question${problems.length === 1 ? "" : "s"}.`);
+      } else {
+        // No numbered questions found — offer each page as one problem.
+        problems = pages.map((p, i) => ({
+          problem: p.text.replace(/\s+/g, " ").slice(0, 600) || `Page ${i + 1}`,
+          latex: "",
+          outline: "",
+          page: i + 1,
+          image: p.image,
+        }));
+        toast.info("No numbered questions detected — showing whole pages instead.");
+      }
       setPdfProblems(problems);
-      if (!problems.length) toast.error("Couldn't find any problems in that PDF.");
     } catch (e) {
       handleThrown(e, "Failed to read PDF");
     } finally {

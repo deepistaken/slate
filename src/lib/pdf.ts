@@ -129,3 +129,55 @@ export async function extractPdfText(file: File): Promise<string> {
   const pages = await extractPdfPages(file);
   return pages.map((p) => p.text).join("\n\n");
 }
+
+export type DetectedProblem = {
+  /** 0-based index into the pages array. */
+  pageIndex: number;
+  /** 1-based line range of the question on that page. */
+  startLine: number;
+  endLine: number;
+  text: string;
+};
+
+// A question starts on a line beginning with a number like "3", "3.1", "3.1.2"
+// (optionally prefixed Question/Aufgabe/Exercice/Q…) followed by real content.
+const QUESTION_START =
+  /^\s*(?:(?:question|aufgabe|exercice|exercise|problem|q)\s*[.:]?\s*)?\d{1,2}(?:\.\d{1,2})*\s*[.)\]:]?\s+\S{2,}/i;
+// …but "10 marks", "3 points", bare page numbers etc. are not questions.
+const NOT_A_QUESTION = /^\s*\d+\s*(?:marks?|points?|punkte?|pts)\b|^\s*\d+\s*$/i;
+
+/**
+ * Purely local question detection — no AI. Splits each page at numbered
+ * question starts; each segment runs to the line before the next question
+ * (or the end of the page).
+ */
+export function detectProblems(pages: PdfPage[]): DetectedProblem[] {
+  const out: DetectedProblem[] = [];
+  pages.forEach((page, pageIndex) => {
+    const starts: number[] = [];
+    page.lines.forEach((l, i) => {
+      if (QUESTION_START.test(l.str) && !NOT_A_QUESTION.test(l.str)) starts.push(i);
+    });
+    starts.forEach((start, s) => {
+      let end = s + 1 < starts.length ? starts[s + 1] - 1 : page.lines.length - 1;
+      // The last question on a page would otherwise swallow the footer: cut
+      // the segment at a large vertical gap (>180px) and drop trailing bare
+      // page numbers / mark tallies.
+      for (let i = start + 1; i <= end; i++) {
+        if (page.lines[i].y - page.lines[i - 1].y > 180) {
+          end = i - 1;
+          break;
+        }
+      }
+      while (end > start && NOT_A_QUESTION.test(page.lines[end].str)) end--;
+      const text = page.lines
+        .slice(start, end + 1)
+        .map((l) => l.str)
+        .join("\n")
+        .trim();
+      if (text.length < 8) return;
+      out.push({ pageIndex, startLine: start + 1, endLine: end + 1, text });
+    });
+  });
+  return out;
+}
